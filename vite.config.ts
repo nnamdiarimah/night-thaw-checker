@@ -6,7 +6,7 @@ import { Buffer } from 'buffer'
 
 // Make Buffer available globally for bip39
 if (typeof window !== 'undefined') {
-  window.Buffer = Buffer
+  (window as any).Buffer = Buffer
 }
 
 export default defineConfig({
@@ -16,7 +16,13 @@ export default defineConfig({
     topLevelAwait()
   ],
   optimizeDeps: {
-    exclude: ['@emurgo/cardano-serialization-lib-browser']
+    exclude: ['lucid-cardano'],
+    esbuildOptions: {
+      target: 'esnext'
+    }
+  },
+  build: {
+    target: 'esnext'
   },
   define: {
     'global': 'globalThis',

@@ -1,14 +1,12 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import * as bip39 from 'bip39';
 import { Buffer } from 'buffer';
+import { Lucid } from 'lucid-cardano';
 
 // Make Buffer available globally for bip39
 if (typeof window !== 'undefined') {
   (window as any).Buffer = Buffer;
 }
-
-// Lazy load the WASM module
-let CardanoWasm: typeof import('@emurgo/cardano-serialization-lib-browser') | null = null;
 
 interface Thaw {
   amount: number;
@@ -142,26 +140,12 @@ export default function ThawChecker() {
   const [addressCount, setAddressCount] = useState(200);
   const [derivedAddresses, setDerivedAddresses] = useState<DerivedAddress[]>([]);
   const [derivationError, setDerivationError] = useState<string | null>(null);
-  const [wasmLoaded, setWasmLoaded] = useState(false);
   const [results, setResults] = useState<AddressResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('timeline');
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [stoppedEarly, setStoppedEarly] = useState<StoppedEarlyInfo | null>(null);
-
-  // Load WASM module on mount
-  useEffect(() => {
-    import('@emurgo/cardano-serialization-lib-browser')
-      .then((module) => {
-        CardanoWasm = module;
-        setWasmLoaded(true);
-      })
-      .catch((error) => {
-        console.error('Failed to load Cardano WASM library:', error);
-        setDerivationError('Failed to load cryptographic library. Please refresh the page.');
-      });
-  }, []);
 
   // Format amount from raw units to NIGHT tokens with comma separators
   const formatAmount = (raw: number | null): string => {
@@ -363,76 +347,68 @@ export default function ThawChecker() {
     return isValid;
   };
 
-  // Helper for hardened derivation
-  const harden = (num: number): number => {
-    return 0x80000000 + num;
-  };
 
-  // Derive Cardano addresses from seed phrase
-  const deriveAddressesFromSeed = (mnemonic: string, count: number): DerivedAddress[] => {
-    if (!CardanoWasm) {
-      throw new Error('Cardano library not loaded yet. Please wait a moment and try again.');
-    }
 
+  // Derive Cardano addresses from seed phrase using Lucid (same as midnight_fetcher_bot_public)
+  const deriveAddressesFromSeed = async (mnemonic: string, count: number): Promise<DerivedAddress[]> => {
     try {
-      // Convert mnemonic to entropy
-      const entropy = bip39.mnemonicToEntropy(mnemonic.trim());
-
-      // Convert hex string to Uint8Array (browser-compatible)
-      const entropyBytes = new Uint8Array(entropy.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
-
-      // Create root key from BIP39 entropy
-      const rootKey = CardanoWasm.Bip32PrivateKey.from_bip39_entropy(
-        entropyBytes,
-        new Uint8Array() // empty password
-      );
-
-      // Cardano derivation path: m/1852'/1815'/0'/0/n
-      // 1852' = purpose (Shelley)
-      // 1815' = coin type (ADA)
-      // 0' = account
-      // 0 = external chain (receive addresses)
-      // n = address index
-
       const addresses: DerivedAddress[] = [];
 
-      // Derive account key: m/1852'/1815'/0'
-      const accountKey = rootKey
-        .derive(harden(1852)) // purpose
-        .derive(harden(1815)) // coin type
-        .derive(harden(0));   // account
-
-      // Derive external chain key: m/1852'/1815'/0'/0
-      const externalChainKey = accountKey.derive(0);
-
-      // Network ID for mainnet
-      const networkId = CardanoWasm.NetworkInfo.mainnet().network_id();
+      // Initialize Lucid without provider (offline mode for address derivation)
+      console.log('Initializing Lucid in offline mode...');
 
       for (let i = 0; i < count; i++) {
-        // Derive address key: m/1852'/1815'/0'/0/i
-        const addressKey = externalChainKey.derive(i);
-        const publicKey = addressKey.to_public();
+        try {
+          // Create a new Lucid instance for each derivation
+          // Use null provider since we're only deriving addresses, not querying blockchain
+          const lucid = await Lucid.new();
 
-        // Create payment credential from public key
-        const paymentKeyHash = publicKey.to_raw_key().hash();
-        const paymentCredential = CardanoWasm.Credential.from_keyhash(paymentKeyHash);
+          lucid.selectWalletFromSeed(mnemonic.trim(), {
+            accountIndex: i,
+          });
 
-        // Create enterprise address (payment only, no staking)
-        const enterpriseAddress = CardanoWasm.EnterpriseAddress.new(
-          networkId,
-          paymentCredential
-        );
+          const address = await lucid.wallet.address();
 
-        const baseAddress = enterpriseAddress.to_address();
-        const bech32 = baseAddress.to_bech32(undefined);
-        const publicKeyHex = publicKey.to_raw_key().to_hex();
+          // Get public key by signing a test message (same method as the bot)
+          const testPayload = Buffer.from('test', 'utf8').toString('hex');
+          const signedMessage = await lucid.wallet.signMessage(address, testPayload);
 
-        addresses.push({
-          index: i,
-          bech32,
-          publicKeyHex,
-          registered: false
+          // Extract 32-byte public key from COSE_Key structure
+          const coseKey = signedMessage.key;
+          const pubKeyHex = coseKey.slice(-64);
+
+          if (!pubKeyHex || pubKeyHex.length !== 64) {
+            throw new Error(`Failed to extract valid public key for index ${i}`);
+          }
+
+          addresses.push({
+            index: i,
+            bech32: address,
+            publicKeyHex: pubKeyHex,
+            registered: false
+          });
+
+          // Log progress every 10 addresses
+          if ((i + 1) % 10 === 0) {
+            console.log(`Generated ${i + 1}/${count} addresses...`);
+          }
+        } catch (err) {
+          console.error(`Error deriving address at index ${i}:`, err);
+          throw err;
+        }
+      }
+
+      // Log first few addresses for verification
+      if (addresses.length > 0) {
+        console.log('=== Generated Addresses (using Lucid - exact match with midnight_fetcher_bot_public) ===');
+        console.log('Method: lucid.selectWalletFromSeed(mnemonic, { accountIndex: i })');
+        console.log('\nFirst 3 addresses:');
+        addresses.slice(0, 3).forEach(addr => {
+          console.log(`Index ${addr.index}: ${addr.bech32}`);
         });
+        console.log('\nCompare these with your derived-addresses.json file from the mining bot');
+        console.log('They should match EXACTLY if using the same seed phrase.');
+        console.log('===================================================');
       }
 
       return addresses;
@@ -443,7 +419,7 @@ export default function ThawChecker() {
   };
 
   // Handle seed phrase address generation
-  const handleGenerateAddresses = () => {
+  const handleGenerateAddresses = async () => {
     console.log('=== Generate Addresses Called ===');
     setDerivationError(null);
     setDerivedAddresses([]);
@@ -477,7 +453,7 @@ export default function ThawChecker() {
 
     console.log('Attempting to derive addresses...');
     try {
-      const addresses = deriveAddressesFromSeed(trimmedPhrase, addressCount);
+      const addresses = await deriveAddressesFromSeed(trimmedPhrase, addressCount);
       console.log('Successfully derived', addresses.length, 'addresses');
       setDerivedAddresses(addresses);
     } catch (error) {
@@ -846,10 +822,9 @@ export default function ThawChecker() {
                 {/* Generate Button */}
                 <button
                   onClick={handleGenerateAddresses}
-                  disabled={!wasmLoaded}
-                  className="w-full mt-4 px-6 py-3 bg-gradient-to-r from-green-600 to-emerald-600 text-white font-bold rounded-lg hover:from-green-500 hover:to-emerald-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full mt-4 px-6 py-3 bg-gradient-to-r from-green-600 to-emerald-600 text-white font-bold rounded-lg hover:from-green-500 hover:to-emerald-500 transition-all"
                 >
-                  {!wasmLoaded ? 'Loading cryptographic library...' : 'Generate Addresses'}
+                  Generate Addresses
                 </button>
 
                 {/* Error Display */}

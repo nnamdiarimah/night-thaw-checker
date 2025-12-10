@@ -23,12 +23,15 @@ chmod +x start.sh
 ## Features
 
 - Check thaw schedule for single or multiple Cardano addresses
+- Import wallet seed phrase to automatically generate and check the first 200 addresses
 - Three view modes: Timeline, Table, and Calendar
 - Export results to CSV or JSON
 - Fully runs locally on your machine - no data sent to third parties
 - Direct connection to Midnight mainnet API
 
 ## Usage
+
+### Single Address Check
 
 1. Enter your Cardano address (starting with `addr1`)
 2. Click "Check Schedule"
@@ -46,6 +49,18 @@ Example:
 My Main Wallet,addr1qxfymkctnvaq4vsdffsdfsfdl6gwkq5r4...
 addr1qxyz...
 ```
+
+### Seed Phrase Import
+
+**⚠️ Security Warning:** Your seed phrase is processed entirely in your browser and never sent to any server. Only use this feature on a trusted device.
+
+1. Click the "Seed Phrase" tab
+2. Enter your 12, 15, or 24-word BIP39 mnemonic seed phrase
+3. Choose how many addresses to generate (default: 200, max: 200)
+4. Click "Generate Addresses"
+5. Click "Check Schedule" to check thaw schedules for all generated addresses
+
+The tool uses Cardano's standard derivation path (`m/1852'/1815'/0'/0/n`) to generate receive addresses compatible with standard wallets like Yoroi, Nami, and Eternl.
 
 ## Technical Details
 

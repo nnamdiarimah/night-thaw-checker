@@ -140,6 +140,10 @@ export default function ThawChecker() {
   const [addressCount, setAddressCount] = useState(200);
   const [derivedAddresses, setDerivedAddresses] = useState<DerivedAddress[]>([]);
   const [derivationError, setDerivationError] = useState<string | null>(null);
+  const [generatingAddresses, setGeneratingAddresses] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState({ current: 0, total: 0 });
+  const [checkingProgress, setCheckingProgress] = useState({ current: 0, total: 0 });
+  const [runningTotals, setRunningTotals] = useState({ totalNight: 0, availableClaims: 0 });
   const [results, setResults] = useState<AddressResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('timeline');
@@ -300,49 +304,33 @@ export default function ThawChecker() {
   // Validate BIP39 mnemonic
   const validateMnemonic = (phrase: string): boolean => {
     const trimmed = phrase.trim();
-    console.log('=== BIP39 Validation Debug ===');
-    console.log('Original phrase:', phrase);
-    console.log('Trimmed phrase:', trimmed);
-    console.log('Word count:', trimmed.split(/\s+/).length);
     const words = trimmed.split(/\s+/);
-    console.log('Words:', words);
-
-    // Check if wordlists are available
-    console.log('Available wordlists:', bip39.wordlists ? Object.keys(bip39.wordlists) : 'none');
 
     // Try validation with explicit English wordlist
     let isValid = false;
     try {
       // Try with default (should be English)
       isValid = bip39.validateMnemonic(trimmed);
-      console.log('Validation with default wordlist:', isValid);
 
       // If that fails and wordlists are available, try explicit English
       if (!isValid && bip39.wordlists && bip39.wordlists.english) {
         isValid = bip39.validateMnemonic(trimmed, bip39.wordlists.english);
-        console.log('Validation with explicit English wordlist:', isValid);
       }
 
       // Fallback: Check if all words are in the wordlist
       if (!isValid && bip39.wordlists && bip39.wordlists.english) {
         const wordlist = bip39.wordlists.english;
         const allWordsValid = words.every(word => wordlist.includes(word));
-        console.log('All words in wordlist:', allWordsValid);
 
         // If all words are valid and count is correct (12, 15, 18, 21, or 24), allow it
         const validWordCounts = [12, 15, 18, 21, 24];
         if (allWordsValid && validWordCounts.includes(words.length)) {
-          console.log('FALLBACK: All words valid, accepting despite checksum failure');
           isValid = true; // Override - we'll let the derivation fail if there's a real issue
         }
       }
     } catch (error) {
       console.error('Validation error:', error);
     }
-
-    console.log('Final validation result:', isValid);
-    console.log('bip39 object:', bip39);
-    console.log('==============================');
 
     return isValid;
   };
@@ -354,11 +342,14 @@ export default function ThawChecker() {
     try {
       const addresses: DerivedAddress[] = [];
 
-      // Initialize Lucid without provider (offline mode for address derivation)
-      console.log('Initializing Lucid in offline mode...');
-
       for (let i = 0; i < count; i++) {
         try {
+          // Update progress
+          setGenerationProgress({ current: i + 1, total: count });
+
+          // Small delay to allow React to update the UI
+          await new Promise(resolve => setTimeout(resolve, 0));
+
           // Create a new Lucid instance for each derivation
           // Use null provider since we're only deriving addresses, not querying blockchain
           const lucid = await Lucid.new();
@@ -387,28 +378,10 @@ export default function ThawChecker() {
             publicKeyHex: pubKeyHex,
             registered: false
           });
-
-          // Log progress every 10 addresses
-          if ((i + 1) % 10 === 0) {
-            console.log(`Generated ${i + 1}/${count} addresses...`);
-          }
         } catch (err) {
           console.error(`Error deriving address at index ${i}:`, err);
           throw err;
         }
-      }
-
-      // Log first few addresses for verification
-      if (addresses.length > 0) {
-        console.log('=== Generated Addresses (using Lucid - exact match with midnight_fetcher_bot_public) ===');
-        console.log('Method: lucid.selectWalletFromSeed(mnemonic, { accountIndex: i })');
-        console.log('\nFirst 3 addresses:');
-        addresses.slice(0, 3).forEach(addr => {
-          console.log(`Index ${addr.index}: ${addr.bech32}`);
-        });
-        console.log('\nCompare these with your derived-addresses.json file from the mining bot');
-        console.log('They should match EXACTLY if using the same seed phrase.');
-        console.log('===================================================');
       }
 
       return addresses;
@@ -420,45 +393,42 @@ export default function ThawChecker() {
 
   // Handle seed phrase address generation
   const handleGenerateAddresses = async () => {
-    console.log('=== Generate Addresses Called ===');
     setDerivationError(null);
     setDerivedAddresses([]);
+    setGeneratingAddresses(true);
+    setGenerationProgress({ current: 0, total: addressCount });
 
     const trimmedPhrase = seedPhrase.trim();
-    console.log('Seed phrase from state:', seedPhrase);
-    console.log('Trimmed:', trimmedPhrase);
-    console.log('Length:', trimmedPhrase.length);
 
     if (!trimmedPhrase) {
-      console.log('ERROR: Empty seed phrase');
       setDerivationError('Please enter a seed phrase');
+      setGeneratingAddresses(false);
       return;
     }
 
-    console.log('Calling validateMnemonic...');
     const isValid = validateMnemonic(trimmedPhrase);
-    console.log('Validation result:', isValid);
 
     if (!isValid) {
-      console.log('ERROR: Invalid mnemonic');
       setDerivationError('Invalid seed phrase. Please check your words and try again.');
+      setGeneratingAddresses(false);
       return;
     }
 
     if (addressCount < 1 || addressCount > 200) {
-      console.log('ERROR: Invalid address count:', addressCount);
       setDerivationError('Address count must be between 1 and 200');
+      setGeneratingAddresses(false);
       return;
     }
 
-    console.log('Attempting to derive addresses...');
     try {
       const addresses = await deriveAddressesFromSeed(trimmedPhrase, addressCount);
-      console.log('Successfully derived', addresses.length, 'addresses');
       setDerivedAddresses(addresses);
     } catch (error) {
       console.error('Derivation error:', error);
       setDerivationError(error instanceof Error ? error.message : 'Failed to generate addresses');
+    } finally {
+      setGeneratingAddresses(false);
+      setGenerationProgress({ current: 0, total: 0 });
     }
   };
 
@@ -507,6 +477,8 @@ export default function ThawChecker() {
     setLoading(true);
     setResults([]);
     setStoppedEarly(null);
+    setCheckingProgress({ current: 0, total: addressesToCheck.length });
+    setRunningTotals({ totalNight: 0, availableClaims: 0 });
 
     // Initialize results with loading state
     const initialResults: AddressResult[] = addressesToCheck.map(({ label, address }) => ({
@@ -536,11 +508,29 @@ export default function ThawChecker() {
           consecutiveEmpty++;
         }
 
-        setResults(prev =>
-          prev.map((r, idx) =>
+        setResults(prev => {
+          const updated = prev.map((r, idx) =>
             idx === i ? { ...r, schedule, loading: false } : r
-          )
-        );
+          );
+
+          // Update running totals
+          if (hasThaws && schedule) {
+            const totalAmount = schedule.thaws.reduce((sum, thaw) => sum + thaw.amount, 0);
+            const availableAmount = schedule.thaws
+              .filter(thaw => new Date(thaw.thawing_period_start) <= new Date())
+              .reduce((sum, thaw) => sum + thaw.amount, 0);
+
+            setRunningTotals(prev => ({
+              totalNight: prev.totalNight + totalAmount,
+              availableClaims: prev.availableClaims + availableAmount
+            }));
+          }
+
+          return updated;
+        });
+
+        // Update progress
+        setCheckingProgress({ current: i + 1, total: addressesToCheck.length });
 
         // Check if we should stop early
         if (consecutiveEmpty >= MAX_CONSECUTIVE_EMPTY && i < addressesToCheck.length - 1) {
@@ -589,6 +579,7 @@ export default function ThawChecker() {
     }
 
     setLoading(false);
+    setCheckingProgress({ current: 0, total: 0 });
   };
 
   // Calculate totals
@@ -822,10 +813,32 @@ export default function ThawChecker() {
                 {/* Generate Button */}
                 <button
                   onClick={handleGenerateAddresses}
-                  className="w-full mt-4 px-6 py-3 bg-gradient-to-r from-green-600 to-emerald-600 text-white font-bold rounded-lg hover:from-green-500 hover:to-emerald-500 transition-all"
+                  disabled={generatingAddresses}
+                  className="w-full mt-4 px-6 py-3 bg-gradient-to-r from-green-600 to-emerald-600 text-white font-bold rounded-lg hover:from-green-500 hover:to-emerald-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Generate Addresses
+                  {generatingAddresses ? 'Generating Addresses...' : 'Generate Addresses'}
                 </button>
+
+                {/* Progress Indicator */}
+                {generatingAddresses && generationProgress.total > 0 && (
+                  <div className="mt-4 p-4 bg-gray-800 rounded-lg border border-gray-700">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-gray-300 font-medium">Generating addresses...</span>
+                      <span className="text-purple-400 font-bold">
+                        {generationProgress.current} / {generationProgress.total}
+                      </span>
+                    </div>
+                    <div className="w-full bg-gray-700 rounded-full h-3 overflow-hidden">
+                      <div
+                        className="bg-gradient-to-r from-purple-500 to-pink-500 h-full transition-all duration-300 ease-out"
+                        style={{ width: `${(generationProgress.current / generationProgress.total) * 100}%` }}
+                      />
+                    </div>
+                    <p className="text-sm text-gray-400 mt-2">
+                      This may take a few minutes for {generationProgress.total} addresses...
+                    </p>
+                  </div>
+                )}
 
                 {/* Error Display */}
                 {derivationError && (
@@ -910,6 +923,42 @@ export default function ThawChecker() {
             >
               {loading ? 'Checking...' : 'Check Schedule'}
             </button>
+
+            {/* Progress Indicator for Schedule Checking */}
+            {loading && checkingProgress.total > 0 && (
+              <div className="mt-6 p-6 bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl border border-gray-700 shadow-xl">
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-gray-200 font-semibold text-lg">Checking Schedules...</span>
+                  <span className="text-purple-400 font-bold text-lg">
+                    {checkingProgress.current} / {checkingProgress.total}
+                  </span>
+                </div>
+
+                {/* Progress Bar */}
+                <div className="w-full bg-gray-700 rounded-full h-4 overflow-hidden mb-4">
+                  <div
+                    className="bg-gradient-to-r from-purple-500 via-blue-500 to-cyan-500 h-full transition-all duration-300 ease-out"
+                    style={{ width: `${(checkingProgress.current / checkingProgress.total) * 100}%` }}
+                  />
+                </div>
+
+                {/* Running Totals */}
+                <div className="grid grid-cols-2 gap-4 mt-4">
+                  <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+                    <div className="text-gray-400 text-sm mb-1">Total NIGHT</div>
+                    <div className="text-2xl font-bold text-green-400">
+                      {formatAmount(runningTotals.totalNight)}
+                    </div>
+                  </div>
+                  <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+                    <div className="text-gray-400 text-sm mb-1">Available to Claim</div>
+                    <div className="text-2xl font-bold text-cyan-400">
+                      {formatAmount(runningTotals.availableClaims)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
